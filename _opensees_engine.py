@@ -7,6 +7,7 @@ import opsvis as opsv
 import ast
 # To Do
 # 1.- improve the set_support method it should be a dict or a list of list 
+# 2.- need to handle where only one cross section is used 
 
 
 class Model():
@@ -25,7 +26,7 @@ class Model():
         self.nodes_w_support = None
         self.default_restrains = None
         self.global_surface_tag = 100000.0
-        self.g = 9800
+        self.g = 10000 #9800
         self.surface_materials = np.genfromtxt(surface_materials, invalid_raise=False)
         self.nodal_loads = np.genfromtxt(nodal_loads_path, dtype='str', delimiter = '\t')
         self.nodes_with_mass = None
@@ -123,7 +124,7 @@ class Model():
 
         
 
-    def set_supports(self,nodes_w_support,default_restrains = [1,1,1,0,0,1]):
+    def set_supports(self,nodes_w_support,default_restrains = [1,1,1,0,0,0]):
         self.nodes_w_support = nodes_w_support
         self.default_restrains = default_restrains
         
@@ -142,7 +143,7 @@ class Model():
         # Create opensees nodes 
         for i in range(len(self.nodes)):
             #id,X,Y,Z
-            ops.node(self.nodes[i,0],self.nodes[i,1],self.nodes[i,2],self.nodes[i,3])
+            ops.node(int(self.nodes[i,0]),self.nodes[i,1],self.nodes[i,2],self.nodes[i,3])
             masa[i, 0] = self.nodes[i,0]
         return masa
 
@@ -168,11 +169,29 @@ class Model():
         # calculate mass
         mass = t * area * gama_conc/self.g/4
         return mass
+    
+    
+    def mass_shell_triangle(self, i, j, k, gama_conc, t):
+        # assuming ops.nodeCoord returns a list of coordinates [x, y, z]
+        cords_i = np.array(ops.nodeCoord(int(i)))
+        cords_j = np.array(ops.nodeCoord(int(j)))
+        cords_k = np.array(ops.nodeCoord(int(k)))
+
+        # define vectors of the triangle
+        vector_ij = cords_j - cords_i
+        vector_ik = cords_k - cords_i
+
+        # calculate area of the triangle (1/2 * magnitude of the cross product of two sides)
+        area = np.linalg.norm(np.cross(vector_ij, vector_ik)) / 2.0
+
+        # calculate mass
+        mass = t * area * gama_conc / self.g / 4
+        return mass
 
        
     
     # def shells_factory(self,masa,surface_tag, t verbose = False):
-    def shells_factory(self,masa,verbose = False):
+    def shells_factory(self,masa,verbose = False,Et = False):
         # surface tag = self.surfaces[it,0]
         # thickness t self.surface[it,2]
         gtag = self.global_surface_tag
@@ -182,10 +201,20 @@ class Model():
             # print(_,_E,_G,_U,_gamma_surf, 'this is surface ',surface_id)
             mesh_index =  np.where(self.mesh_cells[:,1] == surface_id)
             # last value is gamma and is 0 bcs im adding the mass manually
-            ops.section('ElasticMembranePlateSection', int(surface_id+gtag), _E, _U, t_id, 0.0)
+            # ops.uniaxialMaterial('Elastic',, _E)
+            # ops.nDMaterial('ElasticIsotropic', , _E, 0.2)
+            # ops.nDMaterial('ElasticOrthotropic', int(surface_id+gtag), _E, _E,_E, 0.2, 0.2, 0.2,_G,_G,_G)
+            # ops.section('PlateFiber', int(surface_id+gtag), int(surface_id+gtag), t_id)
+            if Et == False:
+                ops.section('ElasticMembranePlateSection', int(surface_id+gtag), _E, _U, t_id, 0.0)
+            else:
+                ops.section('ElasticMembranePlateSection', int(surface_id+gtag), _E, _U, t_id, 0.0,Et)
+                
+                    
             for shell_id, _, i, j, k, l in self.mesh_cells[mesh_index]:
                 idd = shell_id+gtag
                 ops.element('ShellMITC4',int(idd), int(i), int(j), int(k), int(l), int(surface_id+gtag))
+                # ops.element"ShellANDeS",element_number,node_numb_1,node_numb_2,node_numb_3,T,E,Nu,rho)
                 # Get Mass
                 m= self.mass_shell(i, j, k, l, _gamma_surf, t_id)
                 
@@ -202,9 +231,43 @@ class Model():
                     
                     
         return masa 
+    
+    
                 
             
-            
+    # def shells_factory(self,masa,surface_tag, t verbose = False):
+    def shells_factory_andes(self,masa,verbose = False):
+        # surface tag = self.surfaces[it,0]
+        # thickness t self.surface[it,2]
+        gtag = self.global_surface_tag
+        for surface_id , material_id , t_id,_ in self.surfaces:
+            indx_surf_mat = np.where(self.surface_materials[:,0] == material_id)[0][0]
+            _,_E,_G,_U,_gamma_surf = self.surface_materials[indx_surf_mat,:].tolist()
+            # print(_,_E,_G,_U,_gamma_surf, 'this is surface ',surface_id)
+            mesh_index =  np.where(self.mesh_cells[:,1] == surface_id)
+            # last value is gamma and is 0 bcs im adding the mass manually
+            # ops.section('ElasticMembranePlateSection', int(surface_id+gtag), _E, _U, t_id, 0.0)
+            for shell_id, _, i, j, k in self.mesh_cells[mesh_index]:
+                idd = shell_id+gtag
+                # ops.element('ShellMITC4',int(idd), int(i), int(j), int(k), int(l), int(surface_id+gtag))
+                ops.element('ShellANDeS',idd,i,j,k,t_id,_E,0.3,0.0)
+                # Get Mass
+                m= self.mass_shell_triangle(i, j, k, _gamma_surf, t_id)
+                
+                index = np.where(masa[:,0] == int(i))[0][0]
+                masa[index,1] += m
+                index = np.where(masa[:,0] == int(j))[0][0]
+                masa[index,1] += m
+                index = np.where(masa[:,0] == int(k))[0][0]
+                masa[index,1] += m
+     
+                if verbose:
+                    print(f"the id :{shell_id}, with the nodes 1 :{i} , 2 : {j} , 3:{k} @ with mass : {m}. surface :{surface_id}")
+                    
+                    
+        return masa 
+                
+                       
         
     
     """ Requires Modification """ 
@@ -230,15 +293,15 @@ class Model():
             Iy = self.members_prop[cross_index,3]
             Jxx = self.members_prop[cross_index,1]            
         
-        ops.section('Elastic',_member_id, E, A, Iz, Iy, G_mod, Jxx)
-        ops.beamIntegration('Lobatto', _member_id, _member_id, N)  
+        ops.section('Elastic',int(_member_id), E, A, Iz, Iy, G_mod, Jxx)
+        ops.beamIntegration('Lobatto', int(_member_id),int( _member_id), N)  
     
 
 
     def set_members_properties(self,line ,section_id, E,G,N,con,masa,m,rotation):
         
         self.internal_Forces(line ,section_id,rotation, E,G,N)    
-        ops.element('forceBeamColumn',line ,*con,line,line )
+        ops.element('forceBeamColumn',int(line),*con,int(line),int(line) )
         index = np.where(masa[:,0] == con[0])[0][0]
         masa[index,1] += m
         index = np.where(masa[:,0] == con[1])[0][0]
@@ -269,18 +332,18 @@ class Model():
                     m =self.members_prop[index_mem_prop,4]*L*gama/2/g
                     # zip node tags
                     con = [node_tag_i ,node_tag_j]
-                    
+                    vc2= [0.0,-1.0,0.0]
                     if np.linalg.norm(vecxz) == 0:
-                        ops.geomTransf('Linear',line ,0,-1,0)
+                        ops.geomTransf('Linear',int(line) ,*vc2)
                         masa = self.set_members_properties(line ,index_mem_prop, E,G,N,con,masa,m,rotation)
                     else:
                         
                         if node_cord_i[2]-node_cord_j[2] == 0:
-                            ops.geomTransf('Linear',line,*vecxz)
+                            ops.geomTransf('Linear',int(line),*vecxz)
                             masa =self.set_members_properties(line ,index_mem_prop, E,G,N,con,masa,m,rotation)
                             
                         else:
-                            ops.geomTransf('Linear', line,*vecxz)
+                            ops.geomTransf('Linear', int(line),*vecxz)
                             masa = self.set_members_properties(line ,index_mem_prop, E,G,N,con,masa,m,rotation)
                 else:
 
@@ -301,21 +364,22 @@ class Model():
 
     def assign_mass(self,masa):
         for i in range(len(masa)):
-            # ops.mass(masa[i, 0], masa[i, 1], masa[i, 1], masa[i, 1], 0, 0, 0)
-            ops.mass(masa[i, 0], masa[i, 1], masa[i, 1], 0, 0, 0, 0)
+            ops.mass(int(masa[i, 0]), masa[i, 1], masa[i, 1], masa[i, 1], 0, 0, 0)
+            # ops.mass(masa[i, 0], masa[i, 1], masa[i, 1], 0, 0, 0, 0)
             # print(f"done  {masa[i, 0]}")
 
     def Modal_analysis(self, Nm):
         ops.constraints('Transformation')
-        # ops.recorder('PVD', 'Dis_pvd','eigen',4)
-        
-        ops.numberer('Plain')
+        # ops.recorder('PVD', 'Dis_pvd','eigen',15)
+        # ops.numberer('Plain')
         ops.numberer("RCM")
-        ops.analysis("Static")
-        freq = ops.eigen(Nm)
         ops.algorithm('Newton')
+        freq = ops.eigen(Nm)
+        ops.integrator('LoadControl',int(1))
+        ops.analysis("Static")
         ops.analyze(1)
         # ops.remove('recorders')
+        
         return freq
     
     
@@ -399,7 +463,7 @@ class Model():
             masa[index,1] = m
         return masa 
                         
-    def create_model(self,verbose,hinges_lists=None,multiple_support = False,support_hinges = False):
+    def create_model(self,verbose,hinges_lists=None,multiple_support = False,support_hinges = False,Et =False):
         ops.wipe()
         # Creates Opensees Model
         ops.model('basic','-ndm',3,'-ndf',6)
@@ -422,9 +486,10 @@ class Model():
         if self.mesh_cells.size ==0:
             
             self.assign_mass(masa)
+            print('Line 425',np.sum(masa[:,1]))
           
         else:
-            masa = self.shells_factory( masa, verbose)
+            masa = self.shells_factory( masa, verbose,Et)
             # self.assign_mass(masa)  
             print('Mass Assigned to Shells')
             
@@ -450,18 +515,54 @@ class Model():
         return ops , masa 
 
 
+    def create_model_tri(self,verbose,hinges_lists=None,multiple_support = False,support_hinges = False):
+        ops.wipe()
+        # Creates Opensees Model
+        ops.model('basic','-ndm',3,'-ndf',6)
+        # Z global axis reference
+        z = [0,0,1]
+        # integration points 
+        N = 3
+        # generate nodes and 
+        G,gama,E = self.steel_properties
+        # define gravity 
+        g = self.g
+        # Assign Mases 
+        masa = self.create_nodes_mass()
+        self.create_beam_elements( masa, z, gama, g, E, G, N, verbose=True)
+        # self.create_mass_elements(masa, z, gama, g, E, G, N, verbose)
+        #crate mass 
+        if hinges_lists is not None:
+            self.set_hinges(hinges_lists)
         
+        if self.mesh_cells.size ==0:
+            
+            self.assign_mass(masa)
+            print('Line 425',np.sum(masa[:,1]))
+          
+        else:
+            masa = self.shells_factory_andes( masa, verbose)
+            # self.assign_mass(masa)  
+            print('Mass Assigned to Shells')
+            
+        if self.surface_loads.size == 0:
+            pass
+        else:
+            masa =  self.get_mass_surface_loads(masa)
+            print('Surface Loads converted to mass')
 
-# node_path = 'Nodes.txt' 
-# conectivity_path = 'Connc.txt'
-# element_id_path = 'Elementid.txt'
-# members_prop_path = 'Members.txt'
-# members_name_path = 'Nmes.txt'
-
-# support = [1,4,9,14,29,34,65,67,89,94,122,125,130,135,139,142,147\
-#             ,152,170,175,207,209,230,235,260,263,268,273]
-
-# model = Model(node_path,conectivity_path,element_id_path,members_prop_path,members_name_path)
-# model.set_supports(support)
-# model.create_model(verbose = True ,Nm =  10)
-# opsv.plot_mode_shape(3,1000)
+        # assign self weight masses 
+        self.nodal_loads_mass()
+        masa = self.assig_mass2special_nodes(masa)    
+        self.assign_mass(masa)         
+        if multiple_support is not False:
+            self.set_multiple_support(multiple_support)
+        else:
+            self.fix_model()
+            
+        if support_hinges is not False:
+            self.semirigid_support(support_hinges)
+            
+        
+        return ops , masa 
+      
