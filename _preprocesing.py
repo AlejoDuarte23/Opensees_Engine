@@ -73,11 +73,6 @@ class Preprocesor:
         return np.isclose(lhs, 0, atol=1e-6)  # Use an appropriate tolerance
 
     
-
-
-
-
-    
     def get_nodes_between_boundaries(self, list_of_node_tag, master=None):
         # Get the coordinates of the four nodes
         coords = self.get_node_coords(list_of_node_tag)
